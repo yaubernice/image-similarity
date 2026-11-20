@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Similarity — VGG19 + FAISS</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23e2f36b'/%3E%3Ctext x='16' y='23' text-anchor='middle' font-family='Georgia' font-size='20' fill='%2316180f'%3ES%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,620&family=Outfit:wght@340;460;560&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css?v=6">
+</head>
+<body>
+  <div class="app">
+    <header>
+      <a class="brand" href="#studio">
+        <span class="mark" aria-hidden="true">S</span>
+        <span class="brand-text">
+          <strong>Similarity</strong>
+          <small>Retrieval studio</small>
+        </span>
+      </a>
+      <nav class="nav" aria-label="Primary">
+        <button type="button" data-nav="studio" aria-current="page">Studio</button>
+        <button type="button" data-nav="compare">Compare</button>
+        <button type="button" data-nav="evaluate">Evaluation</button>
+        <button type="button" data-nav="library">Library</button>
+        <button type="button" data-nav="method">Method</button>
+      </nav>
+      <div class="header-tools">
+        <label class="model-picker">
+          <span>Model</span>
+          <select id="model-select" aria-label="Active model">
+            <option value="vgg19">VGG19</option>
+            <option value="dinov2">DINOv2</option>
+            <option value="dinov2-ft">DINOv2 fine-tuned</option>
+            <option value="clip">CLIP</option>
+          </select>
+        </label>
+        <button type="button" class="pill" id="status-pill" title="Index status">
+          <span class="dot" id="status-dot"></span>
+          <span id="status-label">Checking the index</span>
+        </button>
+      </div>
+    </header>
+
+    <main>
+      <section id="view-studio" class="view">
+        <div class="studio">
+          <section class="query-col" aria-label="Query">
+            <div class="kicker">
+              <span>01 — Query</span>
+              <span id="query-meta">512-d · unit length</span>
+            </div>
+            <div class="drop" id="drop">
+              <input id="file-input" type="file" accept="image/*" hidden>
+              <div class="drop-empty" id="drop-empty">
+                <p class="drop-title">Drop a photograph</p>
+                <p class="drop-copy">or paste one. It is encoded with the selected model, then matched against that model’s index.</p>
+                <button type="button" class="btn btn-ghost" id="browse">Browse</button>
+              </div>
+              <figure class="preview" id="preview" hidden>
+                <img id="preview-img" alt="">
+                <figcaption>
+                  <span id="preview-name"></span>
+                  <button type="button" class="text-btn" id="replace">Replace</button>
+                </figcaption>
+              </figure>
+            </div>
+
+            <div class="samples" id="samples" hidden>
+              <p class="samples-label">Held-out samples</p>
+              <div class="sample-row" id="sample-row"></div>
+            </div>
+
+            <div class="controls">
+              <label class="slider">
+                <span>Show <strong id="k-label">6</strong> neighbours</span>
+                <input id="k-range" type="range" min="1" max="12" value="6">
+              </label>
+              <div class="toggles">
+                <label><input id="aqe-toggle" type="checkbox"> Query expansion</label>
+                <label><input id="geom-toggle" type="checkbox"> Geometric re-rank</label>
+              </div>
+              <button type="button" class="btn btn-primary" id="search-btn" disabled>Search the index</button>
+              <button type="button" class="btn btn-ghost" id="compare-btn" disabled>Compare models</button>
+              <p class="hint" id="search-hint">Build an index from the library before searching.</p>
+              <div class="text-search">
+                <label for="text-query">CLIP text</label>
+                <input id="text-query" type="search" placeholder="a red sports car" disabled>
+                <button type="button" class="btn btn-ghost" id="text-btn" disabled>Search text</button>
+              </div>
+            </div>
+
+            <div class="fingerprint-block" id="fingerprint-block" hidden>
+              <div class="kicker">
+                <span>Query descriptor</span>
+                <span id="norm-label">L2 norm 1.000</span>
+              </div>
+              <canvas id="query-fp" class="fp" width="640" height="120"></canvas>
+              <p class="fine">Absolute shape of the 512-d vector, averaged into 48 bins. Direction is what the index compares.</p>
+            </div>
+          </section>
+
+          <section class="results-col" aria-label="Matches">
+            <div class="kicker">
+              <span>02 — Nearest neighbours</span>
+              <span id="results-meta">Sorted by L2 distance</span>
+            </div>
+            <div id="results-empty" class="results-empty">
+              <p class="empty-num">0.00</p>
+              <p>Matches appear here, closest first. Similarity is <em>1 / (1 + distance)</em>, so a shorter distance is a higher score.</p>
+            </div>
+            <ol class="results" id="results" hidden></ol>
+          </section>
+
+          <aside class="map-panel" aria-label="Feature map">
+            <div class="kicker">
+              <span>Feature space</span>
+              <span id="map-var">PCA</span>
+            </div>
+            <div class="map-stage" id="map-stage">
+              <canvas id="map-links"></canvas>
+              <div id="map-pins"></div>
+              <div class="map-empty" id="map-empty">
+                <p>The map is a 2D projection of the indexed vectors. Build an index to place the library in feature space.</p>
+              </div>
+            </div>
+            <div class="map-legend">
+              <span><i class="swatch swatch-query"></i> Query</span>
+              <span><i class="swatch swatch-hit"></i> Neighbour</span>
+              <span><i class="swatch swatch-rest"></i> Library</span>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="view-compare" class="view" hidden>
+        <div class="compare-page">
+          <div class="kicker"><span>Compare</span><span id="compare-meta">One query, three indexes</span></div>
+          <h1>The same photograph, each descriptor</h1>
+          <p class="lede">Search runs on every model that already has an index. Columns stay empty until that model is built from the library.</p>
+          <div class="compare-grid" id="compare-grid">
+            <p class="fine" id="compare-empty">Choose a photograph in the studio, then use Compare models.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-evaluate" class="view" hidden>
+        <div class="evaluate-page">
+          <div class="kicker"><span>Evaluation</span><span>Caltech-101 subset</span></div>
+          <h1>Precision, recall, mAP, nDCG</h1>
+          <p class="lede">Relevant means the same class. The query is held out of the database. The baseline row is the original VGG19 global-average-pool index, recorded before the later changes.</p>
+          <div class="eval-actions">
+            <label>Model
+              <select id="eval-model">
+                <option value="vgg19">VGG19</option>
+                <option value="dinov2">DINOv2</option>
+                <option value="dinov2-ft">DINOv2 fine-tuned</option>
+                <option value="clip">CLIP</option>
+              </select>
+            </label>
+            <label>Variant
+              <select id="eval-variant">
+                <option value="baseline">Baseline GAP</option>
+                <option value="plain">Plain</option>
+                <option value="tta_pca" selected>Flip TTA + PCA</option>
+                <option value="aqe">Query expansion</option>
+                <option value="geom">Geometric re-rank</option>
+              </select>
+            </label>
+            <button type="button" class="btn btn-primary" id="eval-btn">Run evaluation</button>
+            <span class="hint" id="eval-status"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="eval-table">
+              <thead>
+                <tr>
+                  <th>Model</th><th>Variant</th>
+                  <th>P@1</th><th>P@5</th><th>P@10</th>
+                  <th>R@1</th><th>R@5</th><th>R@10</th>
+                  <th>mAP</th><th>nDCG@10</th>
+                </tr>
+              </thead>
+              <tbody id="eval-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-library" class="view" hidden>
+        <div class="library">
+          <div class="library-head">
+            <div>
+              <div class="kicker"><span>Library</span><span id="library-count">0 photographs</span></div>
+              <h1>The collection</h1>
+              <p class="lede" id="library-lede">Add images, then build the FAISS index. New photographs stay out of search until the index is rebuilt.</p>
+            </div>
+            <div class="library-actions">
+              <input id="library-filter" type="search" placeholder="Filter by name" aria-label="Filter library">
+              <button type="button" class="btn btn-ghost" id="add-btn">Add photographs</button>
+              <button type="button" class="btn btn-primary" id="build-btn">Build index</button>
+              <input id="library-input" type="file" accept="image/*" multiple hidden>
+            </div>
+          </div>
+
+          <div class="banner" id="stale-banner" hidden></div>
+
+          <div class="build-panel" id="build-panel" hidden>
+            <div class="build-top">
+              <span id="build-message">Indexing</span>
+              <span id="build-pct">0%</span>
+            </div>
+            <div class="track"><div class="fill" id="build-fill"></div></div>
+            <ol class="log" id="build-log"></ol>
+          </div>
+
+          <div class="tiles" id="tiles"></div>
+          <div class="library-empty" id="library-empty" hidden>
+            <p>The library is empty.</p>
+            <p class="fine">Drop photographs here, or use Add photographs. JPEG, PNG, WebP, GIF, BMP, and TIFF up to 15 MB.</p>
+          </div>
+          <div class="drop-overlay" id="drop-overlay" hidden>
+            <p>Drop to add to the library</p>
+          </div>
+          <p class="credit">Sample photographs, when present, are from Unsplash and are only here so the studio has something to search.</p>
+        </div>
+      </section>
+
+      <section id="view-method" class="view" hidden>
+        <div class="method">
+          <div class="method-intro">
+            <div class="kicker"><span>Method</span><span>Three extractors</span></div>
+            <h1>How a photograph becomes a neighbour</h1>
+            <p class="lede">The studio compares directions in a feature space. VGG19, DINOv2, and CLIP each keep their own index. Search can expand the query and check geometry before the list is shown.</p>
+          </div>
+
+          <ol class="steps">
+            <li>
+              <span class="step-no">01</span>
+              <div>
+                <h2>Image loading</h2>
+                <p>Photographs are collected from the library folder, including nested folders. Each file is checked as a real image before it is allowed into the set.</p>
+              </div>
+            </li>
+            <li>
+              <span class="step-no">02</span>
+              <div>
+                <h2>Feature extraction</h2>
+                <p>VGG19 keeps its convolutional map and pools it with generalized mean pooling (GeM, p=3). The short side is resized to 256 and a 224 centre crop is taken, so the picture is not squashed. DINOv2 uses the class token concatenated with the mean patch token. The fine-tuned DINOv2 continues from that descriptor: the last two blocks and a 256-d projection were trained with triplet loss on the Caltech database only, leaving the queries out. CLIP uses the image tower of ViT-B/32, and the same space accepts a text query.</p>
+                <ul class="layers">
+                  <li><strong>Early layers</strong><span>Edges and colour</span></li>
+                  <li><strong>Middle layers</strong><span>Shapes and texture</span></li>
+                  <li><strong>Deeper layers</strong><span>Objects and scenes</span></li>
+                </ul>
+              </div>
+            </li>
+            <li>
+              <span class="step-no">03</span>
+              <div>
+                <h2>Normalization and whitening</h2>
+                <p>A horizontal flip is embedded too, the two vectors are averaged, and the result is scaled back to unit length. PCA whitening, fit on the database and kept at 256 dimensions, then removes the directions that dominate every photograph.</p>
+                <p class="formula">v̂ = v / ‖v‖₂</p>
+              </div>
+            </li>
+            <li>
+              <span class="step-no">04</span>
+              <div>
+                <h2>Indexing</h2>
+                <p>FAISS stores the unit vectors in an exact inner-product index (<code>IndexFlatIP</code>). On unit vectors that ranking matches Euclidean distance. Each model writes its own index, including the whitening that queries must reuse.</p>
+              </div>
+            </li>
+            <li>
+              <span class="step-no">05</span>
+              <div>
+                <h2>Similarity matching</h2>
+                <p>The query takes the same extractor, flip, and whitening as the index. Optional alpha query expansion rebuilds the query as a weighted average of itself and its top neighbours. Optional geometric re-ranking checks the top 30 with ORB, a Lowe ratio test, and a RANSAC homography, then sorts by inlier count.</p>
+                <p class="formula">similarity = 1 / (1 + distance)&nbsp;&nbsp;·&nbsp;&nbsp;distance = √(2 − 2·cosine)</p>
+              </div>
+            </li>
+            <li>
+              <span class="step-no">06</span>
+              <div>
+                <h2>Results</h2>
+                <p>Neighbours are shown closest first, with the similarity score, the raw distance, and a fingerprint of the feature vector. The map places the same vectors on a PCA plane so clusters are visible.</p>
+              </div>
+            </li>
+          </ol>
+
+          <div class="benefits">
+            <article>
+              <h2>Accuracy without training</h2>
+              <p>VGG19 is already trained on a large image set. The studio reuses that representation, so comparison does not need a dataset of labelled pairs.</p>
+            </article>
+            <article>
+              <h2>A manageable update</h2>
+              <p>New photographs are encoded and the index is rebuilt. Exact search over thousands of 512-d vectors stays practical on a laptop.</p>
+            </article>
+            <article>
+              <h2>Variation in the picture</h2>
+              <p>Because the vector describes shape, texture, colour, and arrangement, a match can survive changes in lighting, scale, and framing.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="compare">
+    <div class="compare" id="compare-body"></div>
+  </dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/static/app.js?v=5"></script>
+</body>
+</html>
