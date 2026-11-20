@@ -1,6 +1,6 @@
-# Image Similarity Recognition
+# Image Similarity
 
-Local image retrieval studio: encode a photograph, search a FAISS index, and compare models side by side.
+Visual search studio for photographs, comparing VGG19, DINOv2, and CLIP side by side.
 
 ## Overview
 
